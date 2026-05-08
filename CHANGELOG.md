@@ -1,5 +1,7 @@
 ## Change log
 
+2026-05-08: v2.6.0 (alljamfStatus fork) - Multi-server support. Add `ServerConfig` model and `ServerManager` for storing an unlimited list of Jamf Pro servers. Per-server token cache in `TokenManager`. `UapiCall` gains a server-parameterized `get(server:endpoint:completion:)` method. `StatusMenuController.monitor()` polls all servers concurrently and renders a hierarchical Notifications → Server → Alerts submenu. `ServerListPanel` provides a programmatic Add/Edit/Remove panel (no XIB required). Auto-migrates existing single-server config from upstream on first launch.
+
 2025-01-19: v2.5.4 - Better handling of the health status window.
 
 2025-01-15: v2.5.3 - Actively update health status window if it is presented.

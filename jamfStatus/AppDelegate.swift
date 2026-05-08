@@ -257,22 +257,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, URLSessionDelegate {
 
     func saveCreds(server: String, username: String, password: String) {
         if !( server.isEmpty || username.isEmpty || password.isEmpty ) {
-                        
+
             JamfProServer.base64Creds = ("\(username):\(password)".data(using: .utf8)?.base64EncodedString())!
             JamfProServer.validToken = false
-            
-            // update the connection indicator for the site server
+
             Task {
-                if await TokenManager.shared.tokenInfo?.renewToken ?? true {
-                    await TokenManager.shared.setToken(serverUrl: JamfProServer.url, username: JamfProServer.username.lowercased(), password: JamfProServer.password)
-                }
-                
-                if await TokenManager.shared.tokenInfo?.authMessage ?? "" == "success" {
+                await TokenManager.shared.setToken(serverUrl: JamfProServer.url,
+                                                   username: JamfProServer.username.lowercased(),
+                                                   password: JamfProServer.password,
+                                                   useApiClient: useApiClient)
+
+                let authOk = await TokenManager.shared.tokenInfo?.authMessage == "success"
+                if authOk {
                     defaults.set(JamfProServer.url, forKey: "jamfServerUrl")
+                    Credentials().save(service: server.fqdn, account: username, data: password)
+
+                    // Upsert into ServerManager so new/edited entries are persisted
+                    let useApi = useApiClient != 0
+                    if let idx = ServerManager.shared.servers.firstIndex(where: { $0.url == server }) {
+                        var updated = ServerManager.shared.servers[idx]
+                        updated.username     = username
+                        updated.useApiClient = useApi
+                        ServerManager.shared.update(updated)
+                    } else {
+                        let newConfig = ServerConfig(name: server.fqdn, url: server,
+                                                     username: username, useApiClient: useApi)
+                        ServerManager.shared.add(newConfig)
+                    }
+
                     DispatchQueue.main.async {
                         self.siteConnectionStatus_ImageView.image = self.statusImage[1]
                     }
-                    Credentials().save(service: server.fqdn, account: username, data: password)
                 } else {
                     print("authentication failed")
                     DispatchQueue.main.async {
@@ -284,6 +299,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, URLSessionDelegate {
                 }
             }
         }
+    }
+
+    /// Opens the server list management panel.
+    /// Wire this to a "Manage Servers…" menu item in Interface Builder,
+    /// or call it programmatically after adding the menu item in awakeFromNib.
+    @IBAction func manageServers_Action(_ sender: Any) {
+        ServerListPanel.shared.show()
     }
     
     func showPrefsWindow() {

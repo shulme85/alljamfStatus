@@ -1,128 +1,237 @@
-# jamfStatus
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/jamf/jamfStatus?display_name=tag) ![GitHub all releases](https://img.shields.io/github/downloads/jamf/jamfStatus/total) ![GitHub latest release](https://img.shields.io/github/downloads/jamf/jamfStatus/latest/total)
- ![GitHub issues](https://img.shields.io/github/issues-raw/jamf/jamfStatus) ![GitHub closed issues](https://img.shields.io/github/issues-closed-raw/jamf/jamfStatus) ![GitHub pull requests](https://img.shields.io/github/issues-pr-raw/jamf/jamfStatus) ![GitHub closed pull requests](https://img.shields.io/github/issues-pr-closed-raw/jamf/jamfStatus)
- 
-Download: [jamfStatus](https://github.com/jamf/jamfStatus/releases/latest/download/jamfStatus.zip)
+# alljamfStatus
 
-The application submits basic hardware, OS, and jamfStatus application usage to [TelemetryDeck](https://telemetrydeck.com) by default. The data is sent anonymously and can be disabled by clicking 'Opt out of analytics' from the 'About...' window.
-
-Keep an eye on the status of Jamf Cloud with jamfStatus.  The app will place an icon in the menu bar to reflect the current cloud status.
+> **Fork of [jamf/jamfStatus](https://github.com/jamf/jamfStatus)** — extended to monitor multiple Jamf Pro servers simultaneously from a single menu bar app.
 
 <img src="./jamfStatus/images/menubar.png" alt="menu bar" width="200" />
-<p>
-An alert window will be displayed as the cloud status changes.  You can configure how the alert window display refreshes, either at every status check or only when the status changes.
 
-For minor Jamf Cloud issues something similar to the following be displayed.
+---
 
-<img src="./jamfStatus/images/alert.png" alt="alert" width="700" />
+## What's different in this fork
 
-For major Jamf Cloud issues something similar to the following be displayed.
+| Feature | jamf/jamfStatus (upstream) | alljamfStatus (this fork) |
+|---|---|---|
+| Jamf Pro servers monitored | 1 | Unlimited (5–6 in production, more planned) |
+| Notification menu | Flat list from one server | Hierarchical: **Server Name → Alerts** |
+| Token management | Single token | Per-server token cache (basic auth or OAuth) |
+| Server storage | Single `jamfServerUrl` in UserDefaults | JSON array (`jamfServers`) — auto-migrates from upstream |
+| Server management UI | Single prefs pane | Single prefs pane (primary) + **Manage Servers…** panel |
+| Health status window | Primary server | Primary server (first in list) |
+| Jamf Cloud status icon | ✓ | ✓ unchanged |
 
-<img src="./jamfStatus/images/major.png" alt="alert" width="700" />
+---
 
-Access Preferences from the menu bar icon.  Here you'll be able to set the following:<br>
-- Polling interval.<br>
-- Whether the alert window is displayed at every polling interval or only when the status changes.<br>
-- How the menubar icon is displayed.  Minimizing will place a thin transparent icon in the menubar.<br>
-- Use of a LaunchAgent, to automatically start the app when logging in.<br>
-- Information for your specific Jamf Cloud instance. Use either a local user account or API client.  Keyboard shortcuts for copy/paste do not function, however you can right-click a field to paste URL, username, API client...<br>
-- Most notification can be viewed using an account with no permissions set in Jamf Pro.  Using an account with ready-only on all objects ensure you'll see all notifications. If your cloud server does not utilize the standard HTTPS port (443) be sure to include the port you use in the URL.
+## How it works
 
-<img src="./jamfStatus/images/prefs.png" alt="notifications" width="600" /><br>
+### Polling loop
 
-There are two different menu bar icon styles to choose from.  One uses colors to indicate the status and the other uses slashes.<br><br>
-            <div style="margin-left: 55px;">
-               <table>
-                  <tr>
-                    <th>Status</th>
-                    <td>minor</td>
-                    <td>major</td>
-                    <td>minor</td>
-                    <td>major</td>
-                  </tr>
-                  <tr>
-                    <th>Icon</th>
-                    <td><img src="./jamfStatus/images/minor1.png" id="Image2" alt=""></th>
-                     <td><img src="./jamfStatus/images/major1.png" id="Image2" alt=""></th>
-                        <td><img src="./jamfStatus/images/minor2.png" id="Image2" alt=""></th>
-                           <td><img src="./jamfStatus/images/major2.png" id="Image2" alt=""></th>
-                  </tr>
-                </table></div><br>
+On each polling cycle the app:
 
-Notifications, if any, will appear after the next polling cycle once the information has been entered.
+1. Reads the full server list from `ServerManager`
+2. Fetches `GET /api/v1/notifications` from **every** configured server concurrently
+3. Builds a hierarchical **Notifications (N total) → Server Name (n) → Alerts** submenu
+4. Checks `status.jamf.com` for global Jamf Cloud infrastructure status (drives the menu bar icon color)
+5. Fetches health-status metrics from the **primary server** (first in list) for the Health Status window
 
-<img src="./jamfStatus/images/notifications.png" alt="Preferences" width="600" />
+### Menu structure
 
-The health status can also be viewed for Jamf Cloud hosted instances. The status displays the percent of incoming requests that are successful.
+```
+☁  (menu bar icon — green / yellow / red = Jamf Cloud status)
+│
+├── Notifications (7)
+│   ├── Production (3)              ← server label (not clickable)
+│   │     VPP token expiring in 30 days
+│   │     Push cert expiring in 14 days
+│   │     Device count exceeded
+│   ├── ─────────────────────────
+│   ├── Staging (2)
+│   │     Certificate expiring in 7 days
+│   │     LDAP connection failed
+│   └── ─────────────────────────
+│
+├── Health Status
+├── View Jamf Cloud Status
+├── Manage Servers…                 ← new in this fork
+├── Preferences…
+├── Show Logs
+└── Quit
+```
 
-<img src="./jamfStatus/images/healthStatusMenu.png" alt="Health Status" width="150" />
+### Menu bar icon
+
+The icon color reflects **Jamf Cloud infrastructure status** (green / yellow / red), identical to upstream. Per-server Jamf Pro issues appear in the Notifications submenu, not on the icon.
+
+---
+
+## Managing servers
+
+### Option A — Manage Servers… panel (recommended)
+
+Wire `manageServers_Action:` to a **"Manage Servers…"** menu item in `Base.lproj/MainMenu.xib` (see setup below). The panel lets you:
+
+- **Add** a server (name, URL, username or client ID, password or secret, OAuth toggle)
+- **Edit** an existing server
+- **Remove** a server
+
+Passwords are stored in the macOS Keychain (one entry per FQDN), never in UserDefaults.
+
+### Option B — Preferences window (primary server)
+
+The existing Preferences window edits the **first** server in the list — identical UX to upstream. Any URL saved there is automatically upserted into the server list.
+
+### Option C — UserDefaults JSON (scripting / bulk setup)
+
+The server list is stored as a JSON array under the `jamfServers` key:
+
+```bash
+# View current list
+defaults read com.jamf.jamfstatus jamfServers | python3 -m json.tool
+
+# Seed the list (replace values; passwords go in Keychain separately)
+python3 - <<'EOF'
+import json, subprocess, uuid
+
+servers = [
+    {"id": str(uuid.uuid4()), "name": "Production",  "url": "https://prod.jamfcloud.com",     "username": "monitor", "useApiClient": False},
+    {"id": str(uuid.uuid4()), "name": "Staging",     "url": "https://staging.jamfcloud.com",  "username": "monitor", "useApiClient": False},
+    {"id": str(uuid.uuid4()), "name": "Dev",         "url": "https://dev.jamfcloud.com",      "username": "monitor", "useApiClient": False},
+    {"id": str(uuid.uuid4()), "name": "EU Prod",     "url": "https://eu-prod.jamfcloud.com",  "username": "monitor", "useApiClient": True},
+    {"id": str(uuid.uuid4()), "name": "EU Staging",  "url": "https://eu-stg.jamfcloud.com",   "username": "monitor", "useApiClient": True},
+]
+data = json.dumps(servers)
+subprocess.run(["defaults", "write", "com.jamf.jamfstatus", "jamfServers", data])
+print("Written. Restart alljamfStatus to pick up changes.")
+EOF
+```
+
+Passwords must be added separately via the Manage Servers… panel or the Keychain.
+
+### Migration from upstream jamfStatus
+
+If you already have a single server configured in upstream `jamfStatus`, `alljamfStatus` **automatically migrates** it on first launch. No action needed.
+
+---
+
+## Setup
+
+### Requirements
+
+- macOS 13+
+- Xcode 15+
+- Read-only Jamf Pro API account on each server  
+  *(no permissions = cloud-level notifications only; read-only on all objects = full notification set)*
+
+### Build
+
+```bash
+git clone https://github.com/shulme85/alljamfStatus.git
+cd alljamfStatus
+open jamfStatus.xcodeproj
+# Build & Run in Xcode (⌘R)
+```
+
+### One-time Interface Builder step — add "Manage Servers…"
+
+1. Open `jamfStatus/Base.lproj/MainMenu.xib` in Xcode
+2. Find the status-bar menu (the one connected to `cloudStatusMenu` in `StatusMenuController`)
+3. Drag a new **Menu Item** into the menu — set its title to `Manage Servers…`
+4. Control-drag from the menu item to **AppDelegate** → connect to `manageServers_Action:`
+5. Build and run
+
+---
+
+## Preferences
+
+Access via menu bar icon → **Preferences…**
+
+| Setting | Description |
+|---|---|
+| Polling interval | How often to check all servers (minimum 60 s, default 300 s) |
+| Alert window | Show on every poll vs. only when status changes |
+| Menu bar icon | Minimize / full; Color vs. slash style |
+| Launch agent | Start at login |
+| Server URL / credentials | Edits the primary (first) server |
+
+For the full server list, use **Manage Servers…**
+
+---
+
+## Health Status window
+
+Shows request-success rates for the **primary server** (first in the list):
+
+- API, UI, Enrollment, Device, Default — at 30 s, 1 m, 5 m, 15 m, 30 m windows
+
+> Per-server health status in a single window is on the roadmap.
+
 <img src="./jamfStatus/images/healthStatus.png" alt="Health Status" width="600" />
 
-Status changes are logged to ~/Library/Logs/jamfStatus/jamfStatus.log.  Once the log exceeds 5MB it will be zipped and a new log will be created.  A maximum of 10 zipped log files are retained.  Sample log data:
+---
+
+## Logging
 
 ```
-Thu Sep 17 20:24:30 Jamf Cloud Critical Issue Alert
-Thu Sep 17 20:24:30 Please be aware there is a major issue that may affect your Jamf Cloud instance.
-Thu Sep 17 20:24:30    eu-central-1: JCDS: Major Outage
-Thu Sep 17 20:24:30    Jamf Cloud Distribution Service (JCDS): Major Outage
-
-Thu Sep 17 20:25:30 Jamf Cloud Minor Issue Alert
-Thu Sep 17 20:25:30 Please be aware there is a minor issue that may affect your Jamf Cloud instance.
-Thu Sep 17 20:25:30    Compute Services - US: Degraded Performance
-Thu Sep 17 20:25:30    Database Services - US: Degraded Performance
-
-Thu Sep 17 20:27:30 Notice
-Thu Sep 17 20:27:30 Jamf Cloud: All systems go.
+~/Library/Logs/jamfStatus/jamfStatus.log
 ```
 
-## Notifications for the following will be displayed:
+Rotated at 5 MB; up to 10 archives retained. Per-server auth failures and notification fetches are tagged with the server name.
 
-* &lt;certType&gt; Certificate Expired
-* Cloud Identity Provider Certificate Expired
-* &lt;certType&gt; Certificate Expiring in &lt;days&gt; days
-* Cloud Identity Provider Certificate Expiring in &lt;validDays&gt; Days
-* Scripts contain invalid references to /usr/sbin/jamf
-* Extension attributes contain invalid references to /usr/sbin/jamf
-* Policies contain invalid references to /usr/sbin/jamf
-* Multiple policies have a management account password configuration that is not recommended
-* A policy has a management account password configuration that is not recommended
-* A configured management account feature is not recommended
-* Volume Purchasing Location &lt;name&gt; Expiring In &lt;days&gt; days
-* Volume Purchasing Location &lt;name&gt; Expired
-* Volume Purchasing Server Token Revoked for the location &lt;name&gt;
-* Automated Device Enrollment Instance &lt;name&gt; Expiring In &lt;days&gt; days
-* Automated Device Enrollment Instance &lt;name&gt; Expired
-* PreStage imaging and Autorun imaging requires a Jamf Pro user account with the Use PreStage Imaging and Autorun Imaging privilege.
-* &lt;name&gt; updates inventory on all computers at recurring check-in. This may cause stability issues.
-* &lt;softwareTitleName&gt; v&lt;latestVersion&gt; is available
-* &lt;softwareTitleName&gt; has an extension attribute requiring attention
-* Device Enrollment instance out of date with Apple’s Terms and Conditions.
-* Sync failed. The associated Automated Device Enrollment instance is out of date with Apple’s Terms and Conditions. The updated agreement must be accepted to sync information. See your Apple School Manager instance to accept the updated agreement.
-* &lt;appName&gt; is no longer available for device-assigned managed distribution and any device assignments have been disabled for this app.
-* There was an error configuring &lt;hclName&gt; Healthcare Listener on &lt;jsamName&gt;
-* Port number of &lt;hclName&gt; Healthcare Listener is invalid on &lt;jsamName&gt;
-* Verification of SSL certificates is disabled
-* &lt;jsamName&gt; Infrastructure Manager instance has not checked in with Jamf Pro.
-* Device Count Exceeded
-* Unable to send inventory information to Microsoft Intune
-* Unable to connect to Microsoft Intune
-* Integration disabled
-* Third-Party Signing Certificate Expired
-* Third-Party Signing Certificate Expiring in &lt;days&gt; Days
-* Third-Party Signing Certificate Expiring Today
-* LDAP Server Configuration Error
-* Verification status for the &lt;serverName&gt; LDAP Proxy Server Connection
-* Verification Status for the &lt;serverName&gt; LDAP Proxy Server Connection
-* &lt;userName&gt;'s Managed Apple ID does not match the Managed Apple ID reported in Apple School Manager.
-* The &lt;maid&gt; Managed Apple ID is used by multiple users.
-* The Jamf Pro JSS Built-in Certificate Authority is set to expire soon.
-* The Jamf Pro JSS Built-in Certificate Authority is expired.
-* The Jamf Pro JSS Built-in Certificate Authority has been successfully renewed.
-* The Jamf Pro JSS Built-in Certificate Authority renewal process failed.
-* Unable to connect to APNs because the push certificate was revoked. Navigate to Global Management &gt; Push Certificates and renew the certificate or generate a new one.
-* Connection to the APN Service Failed. Could not connect to the APNs server. The server is down or network is unreachable.
-* Jamf Protect &lt;latestVersion&gt; Now Available
-* Jamf Connect &lt;latestVersion&gt; Now Available
-* Major Update for Jamf Connect Now Available (Jamf Connect &lt;latestVersion&gt;)
-* Device Compliance Connection Interrupted
-* Conditional Access Connection Interrupted
+```
+Fri May 08 10:30:00 [ServerManager] 5 server(s) configured
+Fri May 08 10:30:00 checking notifications: Production (https://prod.jamfcloud.com)
+Fri May 08 10:30:01 checking notifications: Staging (https://staging.jamfcloud.com)
+...
+Fri May 08 10:30:03 Jamf Cloud: All systems go.
+```
+
+Stream debug logs:
+
+```bash
+log stream --debug --predicate 'subsystem == "com.jamf.jamfstatus"'
+```
+
+---
+
+## Alert types monitored
+
+All upstream notification types are supported. Each alert is attributed to its source server in the submenu and in the log file.
+
+<details>
+<summary>Full notification list (same as upstream)</summary>
+
+- Certificate expired / expiring — Tomcat SSL, SSO, GSX, Push, Cloud LDAP, Push Proxy
+- Invalid script / EA / policy references to `/usr/sbin/jamf`
+- Management account payload security (single and multiple policies)
+- VPP / Volume Purchasing token expired or expiring
+- DEP / Automated Device Enrollment instance expired or expiring
+- Frequent inventory collection policy
+- Patch update available / EA requiring attention
+- Apple T&C not signed (DEP, Apple School Manager)
+- App no longer device-assignable
+- Healthcare Listener configuration errors
+- SSL certificate verification disabled
+- Jamf Infrastructure Manager not checking in
+- Device count exceeded
+- Microsoft Intune integration issues (inventory, heartbeat, auth)
+- Third-party signing certificate expired / expiring
+- LDAP server configuration error / proxy connection status
+- Managed Apple ID mismatches / duplicates
+- Built-in CA expiring / expired / renewal success or failure
+- APNs certificate revoked / connection failure
+- Jamf Protect update available
+- Jamf Connect update available (minor and major)
+- Device Compliance connection interrupted
+- Conditional Access connection interrupted
+- Duplicate user email addresses
+
+</details>
+
+---
+
+## Credits
+
+- Original app: [jamf/jamfStatus](https://github.com/jamf/jamfStatus) by Leslie Helou / Jamf Professional Services
+- Multi-server fork: [@shulme85](https://github.com/shulme85)
+
+## License
+
+MIT — see [LICENSE](./LICENSE)

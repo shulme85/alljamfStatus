@@ -14,9 +14,69 @@ import Foundation
 import OSLog
 
 class UapiCall: NSObject, URLSessionDelegate, URLSessionDataDelegate, URLSessionTaskDelegate {
-    
-    var theUapiQ = OperationQueue() // create operation queue for API calls
-    
+
+    var theUapiQ = OperationQueue()
+
+    // MARK: - Multi-server method (uses ServerConfig; preferred for alljamfStatus)
+
+    func get(server: ServerConfig, endpoint: String, completion: @escaping (_ notificationAlerts: [[String: Any]]) -> Void) {
+        Task {
+            let tokenString = await TokenManager.shared.ensureToken(for: server)
+            guard let tokenString, !tokenString.isEmpty,
+                  await TokenManager.shared.token(for: server.url)?.authMessage == "success" else {
+                completion([])
+                return
+            }
+
+            URLCache.shared.removeAllCachedResponses()
+            var workingUrlString = "\(server.url)/api/\(endpoint)"
+            workingUrlString     = workingUrlString.replacingOccurrences(of: "//api", with: "/api")
+
+            self.theUapiQ.maxConcurrentOperationCount = 1
+            self.theUapiQ.addOperation {
+                URLCache.shared.removeAllCachedResponses()
+                guard let encodedURL = URL(string: workingUrlString) else {
+                    completion([])
+                    return
+                }
+                var request = URLRequest(url: encodedURL)
+                request.httpMethod = "GET"
+                request.setValue("Bearer \(tokenString)", forHTTPHeaderField: "Authorization")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                request.setValue(AppInfo.userAgentHeader, forHTTPHeaderField: "User-Agent")
+
+                let session = Foundation.URLSession(configuration: .default, delegate: self as URLSessionDelegate, delegateQueue: OperationQueue.main)
+                let task = session.dataTask(with: request) { data, response, error in
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        Logger.jpapi.info("[\(server.name, privacy: .public)] error: \(error?.localizedDescription ?? "unknown", privacy: .public)")
+                        completion([])
+                        return
+                    }
+                    if (200...299).contains(httpResponse.statusCode) {
+                        do {
+                            if let json = try JSONSerialization.jsonObject(with: data ?? Data(), options: .allowFragments) as? [[String: Any]] {
+                                completion(json)
+                            } else {
+                                Logger.jpapi.info("[\(server.name, privacy: .public)] empty notifications response")
+                                completion([])
+                            }
+                        } catch {
+                            Logger.jpapi.info("[\(server.name, privacy: .public)] JSON parse error: \(error.localizedDescription, privacy: .public)")
+                            completion([])
+                        }
+                    } else {
+                        Logger.jpapi.debug("[\(server.name, privacy: .public)] \(endpoint, privacy: .public) error \(httpResponse.statusCode, privacy: .public)")
+                        completion([])
+                    }
+                }
+                task.resume()
+            }
+        }
+    }
+
+    // MARK: - Legacy single-server method (backward compat)
+
     func get(endpoint: String, completion: @escaping (_ notificationAlerts: [Dictionary<String,Any>]) -> Void) {
                 
         Task {

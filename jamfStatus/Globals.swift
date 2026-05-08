@@ -171,6 +171,83 @@ struct JamfProServer {
     static var version      = ""
 }
 
+// MARK: - Multi-Server Support
+
+struct ServerConfig: Codable, Identifiable {
+    var id: UUID
+    var name: String        // friendly label shown in menus, e.g. "Production"
+    var url: String         // base URL, e.g. https://acme.jamfcloud.com
+    var username: String    // user or API client ID; password lives in Keychain
+    var useApiClient: Bool  // true = OAuth client_credentials flow
+
+    init(id: UUID = UUID(), name: String, url: String, username: String, useApiClient: Bool = false) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.username = username
+        self.useApiClient = useApiClient
+    }
+}
+
+class ServerManager {
+    static let shared = ServerManager()
+
+    private(set) var servers: [ServerConfig] = []
+
+    private init() { load() }
+
+    // MARK: Persistence
+
+    func load() {
+        if let data = defaults.data(forKey: "jamfServers"),
+           let decoded = try? JSONDecoder().decode([ServerConfig].self, from: data) {
+            servers = decoded
+        } else {
+            migrateFromLegacy()
+        }
+    }
+
+    func save() {
+        guard let data = try? JSONEncoder().encode(servers) else { return }
+        defaults.set(data, forKey: "jamfServers")
+    }
+
+    // MARK: CRUD
+
+    func add(_ server: ServerConfig) {
+        servers.append(server)
+        save()
+    }
+
+    func remove(at index: Int) {
+        guard index < servers.count else { return }
+        servers.remove(at: index)
+        save()
+    }
+
+    func update(_ server: ServerConfig) {
+        guard let idx = servers.firstIndex(where: { $0.id == server.id }) else { return }
+        servers[idx] = server
+        save()
+    }
+
+    var primary: ServerConfig? { servers.first }
+
+    // MARK: Migration
+
+    private func migrateFromLegacy() {
+        let url = (defaults.string(forKey: "jamfServerUrl") ?? "").baseUrl
+        guard !url.isEmpty else { return }
+        let creds    = Credentials().itemLookup(service: url.fqdn)
+        let username = creds.count >= 1 ? creds[0] : ""
+        let useApi   = defaults.integer(forKey: "useApiClient") != 0
+        let config   = ServerConfig(name: url.fqdn, url: url, username: username, useApiClient: useApi)
+        servers = [config]
+        save()
+        writeToLog.message(stringOfText: ["[ServerManager] migrated legacy single-server config: \(url)"])
+    }
+}
+
 struct Log {
     static var path: String? = (NSHomeDirectory() + "/Library/Logs/jamfStatus/")
     static var file     = "jamfStatus.log"

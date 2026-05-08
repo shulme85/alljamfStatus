@@ -122,7 +122,16 @@ class StatusMenuController: NSObject, URLSessionDelegate, URLSessionTaskDelegate
         // set menu icon style
         prefs.menuIconStyle = defaults.string(forKey: "menuIconStyle") ?? prefs.menuIconStyle
         
-        if (defaults.string(forKey:"jamfServerUrl") == nil) || (defaults.string(forKey:"jamfServerUrl") == "") {
+        // Load servers from ServerManager (migrates legacy single-server prefs automatically)
+        ServerManager.shared.load()
+        if let primary = ServerManager.shared.primary {
+            JamfProServer.url      = primary.url
+            JamfProServer.username = primary.username
+            useApiClient           = primary.useApiClient ? 1 : 0
+            let creds = Credentials().itemLookup(service: primary.url.fqdn)
+            JamfProServer.password = creds.count == 2 ? creds[1] : ""
+            writeToLog.message(stringOfText: ["[ServerManager] \(ServerManager.shared.servers.count) server(s) configured"])
+        } else if (defaults.string(forKey:"jamfServerUrl") == nil) || (defaults.string(forKey:"jamfServerUrl") == "") {
             defaults.set("", forKey: "jamfServerUrl")
             JamfProServer.url = ""
         } else {
@@ -150,70 +159,102 @@ class StatusMenuController: NSObject, URLSessionDelegate, URLSessionTaskDelegate
     }
     
     func monitor() async {
-//        DispatchQueue.global(qos: .background).async { [self] in
-            while true {
-                
-                // check site server - start
-                Logger.check.info("checking server: \(JamfProServer.url, privacy: .public)")
-                UapiCall().get(endpoint: "v1/notifications") { [self]
-                    (notificationAlerts: [[String: Any]]) in
-                    
-                    if notificationAlerts.count == 0 {
-                        notifications_MenuItem.isHidden = true
-                    } else {
-                        notifications_MenuItem.title = "Notifications (\(notificationAlerts.count))"
-                        notifications_MenuItem.isHidden = false
-                        let subMenu      = NSMenu()
-                        var displayTitleKey = ""
-                        var displayTitle = ""
-                        cloudStatusMenu.setSubmenu(subMenu, for: notifications_MenuItem)
-                        for alert in notificationAlerts {
-//                            print("notification alert: \(alert)")
-                            let alertTitle = alert["type"] as? String ?? "Unknown"
-                            displayTitleKey = JamfNotification.key[alertTitle] ?? "Unknown"
-                            displayTitle = JamfNotification.displayTitle[displayTitleKey] ?? "Unknown"
+        while true {
+
+            // Reload server list each cycle so newly-added servers are picked up
+            ServerManager.shared.load()
+            let servers = ServerManager.shared.servers
+
+            // ---- Per-server notifications ----------------------------------------
+            // Fetch notifications from every configured Jamf Pro server concurrently,
+            // then build a hierarchical Notifications → Server → Alert submenu.
+            Logger.check.info("polling \(servers.count, privacy: .public) Jamf Pro server(s)")
+
+            // Use a continuation-wrapped counter to collect results before building the menu
+            var serverAlerts: [(server: ServerConfig, alerts: [[String: Any]])] = Array(repeating: (ServerConfig(name: "", url: "", username: ""), []), count: servers.count)
+            let group = DispatchGroup()
+
+            for (idx, server) in servers.enumerated() {
+                guard !server.url.isEmpty else { continue }
+                Logger.check.info("checking notifications: \(server.name, privacy: .public) (\(server.url, privacy: .public))")
+                group.enter()
+                UapiCall().get(server: server, endpoint: "v1/notifications") { alerts in
+                    serverAlerts[idx] = (server: server, alerts: alerts)
+                    group.leave()
+                }
+            }
+
+            group.wait()
+
+            let totalCount = serverAlerts.reduce(0) { $0 + $1.alerts.count }
+
+            DispatchQueue.main.async { [self] in
+                if totalCount == 0 {
+                    notifications_MenuItem.isHidden = true
+                } else {
+                    notifications_MenuItem.title  = "Notifications (\(totalCount))"
+                    notifications_MenuItem.isHidden = false
+
+                    let rootMenu = NSMenu()
+                    cloudStatusMenu.setSubmenu(rootMenu, for: notifications_MenuItem)
+
+                    for entry in serverAlerts where !entry.alerts.isEmpty {
+                        // Server header item (non-clickable)
+                        let serverItem = NSMenuItem(title: "\(entry.server.name) (\(entry.alerts.count))", action: nil, keyEquivalent: "")
+                        serverItem.isEnabled = false
+                        rootMenu.addItem(serverItem)
+
+                        for alert in entry.alerts {
+                            let alertTitle      = alert["type"] as? String ?? "Unknown"
+                            let displayTitleKey = JamfNotification.key[alertTitle] ?? "Unknown"
+                            var displayTitle    = JamfNotification.displayTitle[displayTitleKey] ?? "Unknown"
+
                             if displayTitle == "Unknown" {
-                                writeToLog.message(stringOfText: ["unknown alert: \(alert.description.replacingOccurrences(of: "\n", with: ""))"])
+                                writeToLog.message(stringOfText: ["[\(entry.server.name)] unknown alert: \(alert.description.replacingOccurrences(of: "\n", with: ""))"])
                                 displayTitle = alertTitle
                             }
+
                             switch displayTitleKey {
                             case "CERT_WILL_EXPIRE", "CERT_EXPIRED":
-                                displayTitle = displayTitle.replacingOccurrences(of: "{{certType}}", with: "\(String(describing: JamfNotification.humanReadable[alertTitle]!))")
+                                if let humanReadable = JamfNotification.humanReadable[alertTitle] {
+                                    displayTitle = displayTitle.replacingOccurrences(of: "{{certType}}", with: humanReadable)
+                                }
                             default:
                                 break
                             }
-                            let paramDict = alert["params"] as! [String: Any]
-                            for (key,value) in paramDict {
-//                                print("key: \(key)     value: \(value)")
+
+                            let paramDict = alert["params"] as? [String: Any] ?? [:]
+                            for (key, value) in paramDict {
                                 displayTitle = displayTitle.replacingOccurrences(of: "{{\(key)}}", with: "\(value)")
                             }
-                            subMenu.addItem(NSMenuItem(title: "\(displayTitle)", action: #selector(AppDelegate.notificationsAction(_:)), keyEquivalent: ""))
-                            subMenu.item(withTitle: "\(displayTitle)")?.identifier = NSUserInterfaceItemIdentifier.init(rawValue: displayTitleKey)
-                        }
-                    }
-                    
-                }
-                // check site server - end
 
-                //                print("checking status")
-                prefs.pollingInterval = (defaults.integer(forKey: "pollingInterval") < 60 ? 300 : defaults.integer(forKey: "pollingInterval"))
-                prefs.hideMenubarIcon = false // defaults.bool(forKey: "hideMenubarIcon")
-                
-                let result = (try? await getStatus2()) ?? "cloudStatus-green"
-                try? await healthStatus()
-                
-                DispatchQueue.main.async { [self] in
-                    iconName = result
-                    //                        AppDlg.hideIcon ? (icon = NSImage.init(named: NSImage.Name(rawValue: "minimizedIcon"))):(icon = NSImage.init(named: NSImage.Name(rawValue: iconName)))
-                    //                        print("iconName: \(result)")
-                    //                        print("hidemenubar is \(prefs.hideMenubarIcon!)")
-                    prefs.hideMenubarIcon! ? (icon = NSImage.init(named: "minimizedIcon")):(icon = NSImage.init(named: iconName))
-                    
-                    //                        cloudStatusItem.image = icon
-                    cloudStatusItem.button?.image = icon
+                            // Indent alert items under the server header
+                            let alertItem = NSMenuItem(title: "  \(displayTitle)", action: #selector(AppDelegate.notificationsAction(_:)), keyEquivalent: "")
+                            alertItem.identifier = NSUserInterfaceItemIdentifier(rawValue: displayTitleKey)
+                            rootMenu.addItem(alertItem)
+                        }
+
+                        rootMenu.addItem(.separator())
+                    }
                 }
-                sleep(UInt32(Int(prefs.pollingInterval!)))
             }
+            // ---- End per-server notifications ------------------------------------
+
+            prefs.pollingInterval = (defaults.integer(forKey: "pollingInterval") < 60 ? 300 : defaults.integer(forKey: "pollingInterval"))
+            prefs.hideMenubarIcon = false
+
+            let result = (try? await getStatus2()) ?? "cloudStatus-green"
+
+            // Health status is shown for the primary server only
+            try? await healthStatus()
+
+            DispatchQueue.main.async { [self] in
+                iconName = result
+                prefs.hideMenubarIcon! ? (icon = NSImage(named: "minimizedIcon")) : (icon = NSImage(named: iconName))
+                cloudStatusItem.button?.image = icon
+            }
+            sleep(UInt32(Int(prefs.pollingInterval!)))
+        }
     }
     
     @IBAction func alertWindowPref_Action(_ sender: NSButton) {
@@ -416,22 +457,28 @@ class StatusMenuController: NSObject, URLSessionDelegate, URLSessionTaskDelegate
     
     @MainActor
     private func healthStatus() async throws {
-
-        guard TokenManager.shared.tokenInfo?.authMessage == "success" else {
-            Logger.check.info("health status was not updated")
+        // Health status window shows the primary server only
+        guard let primary = ServerManager.shared.primary else {
+            Logger.check.info("health status skipped: no servers configured")
             throw HealthStatusError.authenticationFailed
         }
-        
+
+        let tokenInfo = await TokenManager.shared.token(for: primary.url)
+        guard tokenInfo?.authMessage == "success" else {
+            Logger.check.info("health status was not updated for \(primary.name, privacy: .public)")
+            throw HealthStatusError.authenticationFailed
+        }
+
         refreshHealthStatus = healthStatusIsVisible()
+        Logger.check.info("checking health status: \(primary.name, privacy: .public)")
 
-        Logger.check.info("checking server health status")
+        let apiStatusURL = URL(string: "\(primary.url)/api/v1/health-status")!
 
-        let apiStatusURL = URL(string: "\(JamfProServer.url)/api/v1/health-status")!
-
+        let bearerToken = tokenInfo?.token ?? JamfProServer.accessToken
         var request = URLRequest(url: apiStatusURL)
         request.httpMethod = "GET"
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("Bearer \(JamfProServer.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(AppInfo.userAgentHeader, forHTTPHeaderField: "User-Agent")
 
