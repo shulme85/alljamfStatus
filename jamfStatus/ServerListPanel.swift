@@ -25,6 +25,7 @@ final class ServerListPanel: NSObject, NSTableViewDataSource, NSTableViewDelegat
         if panel == nil { buildPanel() }
         tableView.reloadData()
         panel?.center()
+        NSApp.activate(ignoringOtherApps: true)
         panel?.makeKeyAndOrderFront(nil)
     }
 

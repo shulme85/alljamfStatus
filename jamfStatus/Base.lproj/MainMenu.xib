@@ -95,6 +95,12 @@
                         <action selector="prefs_MenuItem:" target="Voe-Tx-rLC" id="ek1-s5-PwZ"/>
                     </connections>
                 </menuItem>
+                <menuItem title="Manage Servers…" id="MSr-Vh-xKq" userLabel="Manage Servers">
+                    <modifierMask key="keyEquivalentModifierMask"/>
+                    <connections>
+                        <action selector="manageServers_Action:" target="Voe-Tx-rLC" id="MSr-Vh-xLp"/>
+                    </connections>
+                </menuItem>
                 <menuItem title="Check for Update..." id="jc8-2N-4o5">
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <connections>
